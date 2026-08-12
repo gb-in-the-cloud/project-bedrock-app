@@ -1,0 +1,123 @@
+# ── UI ────────────────────────────────────────────────────────────────────────
+ui:
+  replicaCount: 2
+
+  service:
+    type: ClusterIP    # ALB Ingress handles external exposure
+
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 512m
+      memory: 512Mi
+
+# ── Catalog Service → RDS MySQL ───────────────────────────────────────────────
+catalog:
+  replicaCount: 1
+
+  # Disable in-cluster MySQL sidecar
+  mysql:
+    enabled: false
+
+  # Reference Kubernetes Secret created by deploy-app.sh
+  # Secret: retail-store-catalog-db (namespace: retail-app)
+  db:
+    name: catalog
+    endpoint:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-catalog-db
+          key: host
+    user:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-catalog-db
+          key: username
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-catalog-db
+          key: password
+
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 512m
+      memory: 512Mi
+
+# ── Orders Service → RDS PostgreSQL ──────────────────────────────────────────
+orders:
+  replicaCount: 1
+
+  # Disable in-cluster PostgreSQL sidecar
+  postgresql:
+    enabled: false
+
+  # Reference Kubernetes Secret created by deploy-app.sh
+  # Secret: retail-store-orders-db (namespace: retail-app)
+  db:
+    name: orders
+    endpoint:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-orders-db
+          key: host
+    user:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-orders-db
+          key: username
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: retail-store-orders-db
+          key: password
+
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 512m
+      memory: 512Mi
+
+# ── Carts Service → DynamoDB ──────────────────────────────────────────────────
+carts:
+  replicaCount: 1
+
+  dynamoDb:
+    enabled:     true
+    tableName:   project-bedrock-carts
+    createTable: false    
+
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 512m
+      memory: 512Mi
+
+# ── Checkout ──────────────────────────────────────────────────────────────────
+checkout:
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 512m
+      memory: 512Mi
+
+# ── RabbitMQ — stays in-cluster (acceptable per assessment) ──────────────────
+rabbitmq:
+  enabled: true
+
+# ── Assets (static files) ─────────────────────────────────────────────────────
+assets:
+  replicaCount: 1
