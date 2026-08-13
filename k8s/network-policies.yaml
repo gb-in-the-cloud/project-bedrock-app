@@ -1,0 +1,193 @@
+# NetworkPolicy — retail-app namespace
+# Default deny-all then selectively allow per service needs.
+#
+# Traffic matrix:
+#   ui       → catalog, carts, orders, checkout     ✅
+#   checkout → orders, carts, rabbitmq              ✅
+#   orders   → postgresql (RDS), rabbitmq           ✅
+#   catalog  → mysql (RDS)                          ✅
+#   carts    → dynamodb (port 443)                  ✅
+#   catalog  → orders                               blocked
+#   orders   → catalog                              blocked
+# Default: deny all ingress and egress within namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: retail-app
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# All pods need DNS resolution
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: retail-app
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# UI: accept traffic from ALB, reach backend services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ui-policy
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ui
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: catalog
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: carts
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: checkout
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: assets
+
+---
+# Catalog: ingress from ui only, egress to RDS MySQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-policy
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ui
+  egress:
+    - ports:
+        - port: 3306    # RDS MySQL
+
+---
+# Orders: ingress from ui and checkout, egress to RDS PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders-policy
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orders
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ui
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: checkout
+  egress:
+    - ports:
+        - port: 5432    # RDS PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
+
+---
+# Carts: ingress from ui and checkout, egress to DynamoDB via HTTPS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: carts-policy
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: carts
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ui
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: checkout
+  egress:
+    - ports:
+        - port: 443     # DynamoDB API via HTTPS
+
+---
+# Checkout: ingress from ui, egress to orders, carts, rabbitmq
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: checkout-policy
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: checkout
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ui
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: carts
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
