@@ -1,0 +1,16 @@
+.env
+*.pem
+*.key
+secrets/
+
+# Helm
+charts/
+*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
