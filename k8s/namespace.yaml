@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: retail-app
+  labels:
+    project: tinyuka-2025-capstone
+    managed-by: kubectl
+
+  

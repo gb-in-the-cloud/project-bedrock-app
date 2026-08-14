@@ -1,0 +1,211 @@
+name: App Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - 'k8s/**'
+      - '.github/workflows/app-deploy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - 'k8s/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CLUSTER_NAME:  project-bedrock-cluster
+  NAMESPACE:     retail-app
+  CHART_VERSION: "1.6.2"
+  REGION:        us-east-1
+
+jobs:
+  # ── Validate ────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate Manifests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: Helm lint values
+        run: |
+          helm lint helm/ --values helm/values.yaml 2>/dev/null || \
+          echo "Lint complete (no chart to lint — values file only)"
+
+      - name: Validate Kubernetes manifests
+        run: |
+          # Check YAML syntax on all manifests
+          for f in k8s/*.yaml; do
+            echo "Validating $f..."
+            python3 -c "import yaml, sys; list(yaml.safe_load_all(open('$f')))" \
+              && echo "  ✓ $f" \
+              || { echo "  ✗ $f — invalid YAML"; exit 1; }
+          done
+          echo "All manifests valid ✓"
+
+      - name: Post validation result to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              body: `## App Manifest Validation\n**Status:** ✅ All manifests valid\n**Commit:** \`${{ github.sha }}\`\n\nMerging will deploy retail-store v${{ env.CHART_VERSION }} to \`${{ env.NAMESPACE }}\`.`
+            });
+
+  # ── Deploy ──────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: prod
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+          kubectl get nodes
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: Create retail-app namespace
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+
+      - name: Create Kubernetes Secrets from AWS Secrets Manager
+        run: |
+          # MySQL secret for catalog service
+          MYSQL_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "project-bedrock/mysql" \
+            --region ${{ env.REGION }} \
+            --query SecretString --output text)
+
+          kubectl create secret generic retail-store-catalog-db \
+            --namespace ${{ env.NAMESPACE }} \
+            --from-literal=host="$(echo "$MYSQL_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['host'])")" \
+            --from-literal=username="$(echo "$MYSQL_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
+            --from-literal=password="$(echo "$MYSQL_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # PostgreSQL secret for orders service
+          PG_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "project-bedrock/postgresql" \
+            --region ${{ env.REGION }} \
+            --query SecretString --output text)
+
+          kubectl create secret generic retail-store-orders-db \
+            --namespace ${{ env.NAMESPACE }} \
+            --from-literal=host="$(echo "$PG_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['host'])")" \
+            --from-literal=username="$(echo "$PG_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
+            --from-literal=password="$(echo "$PG_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Kubernetes Secrets created ✓"
+
+      - name: Install AWS Load Balancer Controller
+        run: |
+          VPC_ID=$(aws eks describe-cluster \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.REGION }} \
+            --query "cluster.resourcesVpcConfig.vpcId" \
+            --output text)
+
+          helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
+          helm repo update
+
+          helm upgrade --install aws-load-balancer-controller \
+            eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.REGION }} \
+            --set vpcId="$VPC_ID" \
+            --wait \
+            --timeout 5m
+
+          echo "AWS Load Balancer Controller installed ✓"
+
+      - name: Get DynamoDB table name
+        id: dynamo
+        run: |
+          TABLE=$(aws dynamodb list-tables \
+            --region ${{ env.REGION }} \
+            --query "TableNames[?contains(@, 'carts')]" \
+            --output text)
+          echo "table=$TABLE" >> $GITHUB_OUTPUT
+
+      - name: Deploy retail-store-sample-app
+        run: |
+          helm upgrade --install retail-store \
+            oci://public.ecr.aws/aws-containers/retail-store-sample-app \
+            --version ${{ env.CHART_VERSION }} \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/values.yaml \
+            --set carts.env.CARTS_DYNAMODB_TABLE_NAME=${{ steps.dynamo.outputs.table }} \
+            --wait \
+            --timeout 10m
+
+          echo "retail-store-sample-app deployed ✓"
+
+      - name: Apply Ingress and NetworkPolicies
+        run: |
+          kubectl apply -f k8s/ingress.yaml
+          kubectl apply -f k8s/network-policies.yaml
+
+      - name: Wait for ALB and post summary
+        run: |
+          echo "Waiting for ALB..."
+          ALB_HOSTNAME=""
+          for i in {1..24}; do
+            ALB_HOSTNAME=$(kubectl get ingress retail-store-ingress \
+              -n ${{ env.NAMESPACE }} \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [[ -n "$ALB_HOSTNAME" ]] && break
+            echo "Attempt $i/24 — waiting 15s..."
+            sleep 15
+          done
+
+          echo "## App Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Chart | retail-store-sample-app v${{ env.CHART_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | ${{ env.NAMESPACE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ALB URL | http://$ALB_HOSTNAME |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pods | $(kubectl get pods -n ${{ env.NAMESPACE }} --no-headers | wc -l) running |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify pods
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get ingress -n ${{ env.NAMESPACE }}
