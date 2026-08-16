@@ -1,8 +1,6 @@
 # project-bedrock-app
 The Application repo for project bedrock(Tinyuka 2025)
 
-# project-bedrock-app
-
 Application deployment repository for the **project-bedrock** capstone.
 
 Deploys the [AWS Retail Store Sample App](https://github.com/aws-containers/retail-store-sample-app) (v1.6.2) to the `project-bedrock-cluster` EKS cluster using the upstream Helm chart with custom values overriding in-cluster databases with managed AWS services.

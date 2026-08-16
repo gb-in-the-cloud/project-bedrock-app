@@ -168,16 +168,14 @@ jobs:
 
       - name: Deploy retail-store-sample-app
         run: |
-          helm upgrade --install retail-store \
-            oci://public.ecr.aws/aws-containers/retail-store-sample-app \
-            --version ${{ env.CHART_VERSION }} \
-            --namespace ${{ env.NAMESPACE }} \
-            --values helm/values.yaml \
-            --set carts.env.CARTS_DYNAMODB_TABLE_NAME=${{ steps.dynamo.outputs.table }} \
-            --wait \
-            --timeout 10m
-
-          echo "retail-store-sample-app deployed ✓"
+          kubectl create namespace ${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          curl -L https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml \
+            | sed 's/namespace: default/namespace: ${{ env.NAMESPACE }}/g' \
+            | kubectl apply -n ${{ env.NAMESPACE }} -f -
+          kubectl wait --for=condition=available deployments --all \
+            -n ${{ env.NAMESPACE }} \
+            --timeout=5m
 
       - name: Apply Ingress and NetworkPolicies
         run: |
