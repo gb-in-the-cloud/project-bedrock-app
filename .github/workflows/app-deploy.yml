@@ -135,7 +135,7 @@ jobs:
 
       - name: Install AWS Load Balancer Controller
         run: |
-        
+
           ACCOUNT_ID=$(aws sts get-caller-identity \
             --query Account \
             --output text)
@@ -219,6 +219,15 @@ jobs:
             --query "TableNames[?contains(@, 'carts')]" \
             --output text)
           echo "table=$TABLE" >> $GITHUB_OUTPUT
+      - name: Fix ALB Controller webhook
+        run: |
+          kubectl delete mutatingwebhookconfiguration \
+            aws-load-balancer-webhook --ignore-not-found=true
+          kubectl rollout restart deployment \
+            aws-load-balancer-controller -n kube-system
+          kubectl rollout status deployment \
+            aws-load-balancer-controller -n kube-system \
+            --timeout=3m
 
       - name: Deploy retail-store-sample-app
         run: |
