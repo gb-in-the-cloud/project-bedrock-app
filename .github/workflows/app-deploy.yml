@@ -135,11 +135,41 @@ jobs:
 
       - name: Install AWS Load Balancer Controller
         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          CLUSTER=$(aws eks list-clusters \
+            --region ${{ vars.AWS_REGION }} \
+            --query "clusters[?contains(@,'project-bedrock')]" \
+            --output text)
           VPC_ID=$(aws eks describe-cluster \
-            --name ${{ env.CLUSTER_NAME }} \
-            --region ${{ env.REGION }} \
+            --name "$CLUSTER" \
+            --region ${{ vars.AWS_REGION }} \
             --query "cluster.resourcesVpcConfig.vpcId" \
             --output text)
+          OIDC_URL=$(aws eks describe-cluster \
+            --name "$CLUSTER" \
+            --region ${{ vars.AWS_REGION }} \
+            --query "cluster.identity.oidc.issuer" \
+            --output text | sed 's|https://||')
+          ALB_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/project-bedrock-alb-controller-role"
+
+          aws iam update-assume-role-policy \
+            --role-name project-bedrock-alb-controller-role \
+            --policy-document "{
+              \"Version\": \"2012-10-17\",
+              \"Statement\": [{
+                \"Effect\": \"Allow\",
+                \"Principal\": {
+                  \"Federated\": \"arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_URL}\"
+                },
+                \"Action\": \"sts:AssumeRoleWithWebIdentity\",
+                \"Condition\": {
+                  \"StringEquals\": {
+                    \"${OIDC_URL}:sub\": \"system:serviceaccount:kube-system:aws-load-balancer-controller\",
+                    \"${OIDC_URL}:aud\": \"sts.amazonaws.com\"
+                  }
+                }
+              }]
+            }"
 
           helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
           helm repo update
@@ -147,13 +177,15 @@ jobs:
           helm upgrade --install aws-load-balancer-controller \
             eks/aws-load-balancer-controller \
             --namespace kube-system \
-            --set clusterName=${{ env.CLUSTER_NAME }} \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=${{ env.REGION }} \
+            --set clusterName="$CLUSTER" \
+            --set serviceAccount.create=true \
+            --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+            --set region=${{ vars.AWS_REGION }} \
             --set vpcId="$VPC_ID" \
+            --set enableCertManager=false \
+            --set webhookTLS.autogenerate=true \
             --wait \
-            --timeout 5m
+            --timeout 8m
 
           echo "AWS Load Balancer Controller installed ✓"
 
