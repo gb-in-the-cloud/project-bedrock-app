@@ -245,6 +245,26 @@ jobs:
           kubectl apply -f k8s/ingress.yaml
           kubectl apply -f k8s/network-policies.yaml
 
+      - name: Open ALB port 80
+        run: |
+          sleep 30
+          ALB_ARN=$(aws elbv2 describe-load-balancers \
+            --region ${{ vars.AWS_REGION }} \
+            --query "LoadBalancers[?contains(DNSName,'retailst')].LoadBalancerArn" \
+            --output text)
+          ALB_SG=$(aws elbv2 describe-load-balancers \
+            --region ${{ vars.AWS_REGION }} \
+            --load-balancer-arns "$ALB_ARN" \
+            --query "LoadBalancers[0].SecurityGroups[0]" \
+            --output text)
+          aws ec2 authorize-security-group-ingress \
+            --group-id "$ALB_SG" \
+            --protocol tcp \
+            --port 80 \
+            --cidr 0.0.0.0/0 \
+            --region ${{ vars.AWS_REGION }} 2>/dev/null || true
+          echo "Port 80 opened on $ALB_SG ✓"
+
       - name: Wait for ALB and post summary
         run: |
           echo "Waiting for ALB..."
