@@ -265,7 +265,7 @@ jobs:
 
             #Fix catalog → RDS MySQL
           MYSQL_SECRET=$(aws secretsmanager get-secret-value \
-            --secret-id "bedrock/catalog-mysql" \
+            --secret-id "project-bedrock/catalog-mysql" \
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
@@ -279,7 +279,7 @@ jobs:
 
           # Fix orders → RDS PostgreSQL
           PG_SECRET=$(aws secretsmanager get-secret-value \
-            --secret-id "bedrock/orders-postgres" \
+            --secret-id "project-bedrock/orders-postgres" \
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
