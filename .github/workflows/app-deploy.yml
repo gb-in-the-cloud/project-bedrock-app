@@ -241,35 +241,35 @@ jobs:
             --timeout=5m
       - name: Configure service endpoints 
         run: |
-          # Wait for retail-store-ui configmap to exist
-          echo "Waiting for retail-store-ui configmap..."
+          # Wait for ui configmap to exist
+          echo "Waiting for ui configmap..."
           for i in {1..20}; do
-          kubectl get configmap retail-store-ui \
+          kubectl get configmap ui \
           -n ${{ env.NAMESPACE }} &>/dev/null && break
           echo "Attempt $i/20 — waiting 10s..."
           sleep 10
           done
 
           # Fix UI configmap to use correct service names
-          kubectl patch configmap retail-store-ui \
+          kubectl patch configmap ui \
             -n ${{ env.NAMESPACE }} \
             --patch '{
               "data": {
-                "ENDPOINTS_CATALOG":  "http://retail-store-catalog:80",
-                "ENDPOINTS_CARTS":    "http://retail-store-carts:80",
-                "ENDPOINTS_ORDERS":   "http://retail-store-orders:80",
-                "ENDPOINTS_CHECKOUT": "http://retail-store-checkout:80",
-                "ENDPOINTS_ASSETS":   "http://retail-store-assets:80"
+                "ENDPOINTS_CATALOG":  "http://catalog:80",
+                "ENDPOINTS_CARTS":    "http://carts:80",
+                "ENDPOINTS_ORDERS":   "http://orders:80",
+                "ENDPOINTS_CHECKOUT": "http://checkout:80",
+                "ENDPOINTS_ASSETS":   "http://assets:80"
               }
             }'
-            
+
             #Fix catalog → RDS MySQL
           MYSQL_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "bedrock/catalog-mysql" \
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
-          kubectl set env deployment/retail-store-catalog \
+          kubectl set env deployment/catalog \
             -n ${{ env.NAMESPACE }} \
             --env="DB_ENDPOINT=$(echo $MYSQL_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':3306')")" \
             --env="DB_READ_ENDPOINT=$(echo $MYSQL_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':3306')")" \
@@ -283,7 +283,7 @@ jobs:
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
-          kubectl set env deployment/retail-store-orders \
+          kubectl set env deployment/orders \
             -n ${{ env.NAMESPACE }} \
             --env="DB_ENDPOINT=$(echo $PG_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':5432')")" \
             --env="DB_READ_ENDPOINT=$(echo $PG_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':5432')")" \
@@ -292,27 +292,27 @@ jobs:
             --env="DB_NAME=orders"
 
           # Fix carts → DynamoDB
-          kubectl set env deployment/retail-store-carts \
+          kubectl set env deployment/carts \
             -n ${{ env.NAMESPACE }} \
             --env="CARTS_DYNAMODB_TABLE_NAME=project-bedrock-carts" \
             --env="AWS_REGION=${{ env.REGION }}" \
             --env="SPRING_PROFILES_ACTIVE=dynamodb"
 
           # Restart all deployments to pick up new config
-          kubectl rollout restart deployment/retail-store-ui \
-            deployment/retail-store-catalog \
-            deployment/retail-store-orders \
-            deployment/retail-store-carts \
+          kubectl rollout restart deployment/ui \
+            deployment/catalog \
+            deployment/orders \
+            deployment/carts \
             -n ${{ env.NAMESPACE }}
 
           # Wait for rollouts to complete
-          kubectl rollout status deployment/retail-store-ui \
+          kubectl rollout status deployment/ui \
             -n ${{ env.NAMESPACE }} --timeout=3m
-          kubectl rollout status deployment/retail-store-catalog \
+          kubectl rollout status deployment/catalog \
             -n ${{ env.NAMESPACE }} --timeout=3m
-          kubectl rollout status deployment/retail-store-orders \
+          kubectl rollout status deployment/orders \
             -n ${{ env.NAMESPACE }} --timeout=3m
-          kubectl rollout status deployment/retail-store-carts \
+          kubectl rollout status deployment/carts \
             -n ${{ env.NAMESPACE }} --timeout=3m
 
           echo "All service endpoints configured ✓"
