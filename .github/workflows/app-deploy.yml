@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'helm/**'
-      - 'k8s/**'
-      - '.github/workflows/app-deploy.yml'
+      - "helm/**"
+      - "k8s/**"
+      - ".github/workflows/app-deploy.yml"
   pull_request:
     branches: [main]
     paths:
-      - 'helm/**'
-      - 'k8s/**'
+      - "helm/**"
+      - "k8s/**"
   workflow_dispatch:
 
 permissions:
@@ -19,10 +19,10 @@ permissions:
   pull-requests: write
 
 env:
-  CLUSTER_NAME:  project-bedrock-cluster
-  NAMESPACE:     retail-app
+  CLUSTER_NAME: project-bedrock-cluster
+  NAMESPACE: retail-app
   CHART_VERSION: "1.6.2"
-  REGION:        us-east-1
+  REGION: us-east-1
 
 jobs:
   # ── Validate ────────────────────────────────────────────────────────────────
@@ -83,9 +83,9 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.REGION }}
+          aws-region: ${{ env.REGION }}
 
       - name: Configure kubectl
         run: |
@@ -239,7 +239,71 @@ jobs:
           kubectl wait --for=condition=available deployments --all \
             -n ${{ env.NAMESPACE }} \
             --timeout=5m
+      - name: Configure service endpoints 
+        run: |
+          # Fix UI configmap to use correct service names
+          kubectl patch configmap retail-store-ui \
+            -n ${{ env.NAMESPACE }} \
+            --patch '{
+              "data": {
+                "ENDPOINTS_CATALOG":  "http://retail-store-catalog:80",
+                "ENDPOINTS_CARTS":    "http://retail-store-carts:80",
+                "ENDPOINTS_ORDERS":   "http://retail-store-orders:80",
+                "ENDPOINTS_CHECKOUT": "http://retail-store-checkout:80",
+                "ENDPOINTS_ASSETS":   "http://retail-store-assets:80"
+              }
+            }'
+            #Fix catalog → RDS MySQL
+          MYSQL_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "bedrock/catalog-mysql" \
+            --region ${{ env.REGION }} \
+            --query SecretString --output text)
 
+          kubectl set env deployment/retail-store-catalog \
+            -n ${{ env.NAMESPACE }} \
+            --env="DB_ENDPOINT=$(echo $MYSQL_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':3306')")" \
+            --env="DB_READ_ENDPOINT=$(echo $MYSQL_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':3306')")" \
+            --env="DB_USER=$(echo $MYSQL_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
+            --env="DB_PASSWORD=$(echo $MYSQL_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
+            --env="DB_NAME=catalog"
+          # Fix orders → RDS PostgreSQL
+          PG_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "bedrock/orders-postgres" \
+            --region ${{ env.REGION }} \
+            --query SecretString --output text)
+
+          kubectl set env deployment/retail-store-orders \
+            -n ${{ env.NAMESPACE }} \
+            --env="DB_ENDPOINT=$(echo $PG_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':5432')")" \
+            --env="DB_READ_ENDPOINT=$(echo $PG_SECRET | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host']+':5432')")" \
+            --env="DB_USER=$(echo $PG_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
+            --env="DB_PASSWORD=$(echo $PG_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
+            --env="DB_NAME=orders"
+            # Fix carts → DynamoDB
+          kubectl set env deployment/retail-store-carts \
+            -n ${{ env.NAMESPACE }} \
+            --env="CARTS_DYNAMODB_TABLE_NAME=project-bedrock-carts" \
+            --env="AWS_REGION=${{ env.REGION }}" \
+            --env="SPRING_PROFILES_ACTIVE=dynamodb"
+
+          # Restart all deployments to pick up new config
+          kubectl rollout restart deployment/retail-store-ui \
+            deployment/retail-store-catalog \
+            deployment/retail-store-orders \
+            deployment/retail-store-carts \
+            -n ${{ env.NAMESPACE }}
+
+          # Wait for rollouts to complete
+          kubectl rollout status deployment/retail-store-ui \
+            -n ${{ env.NAMESPACE }} --timeout=3m
+          kubectl rollout status deployment/retail-store-catalog \
+            -n ${{ env.NAMESPACE }} --timeout=3m
+          kubectl rollout status deployment/retail-store-orders \
+            -n ${{ env.NAMESPACE }} --timeout=3m
+          kubectl rollout status deployment/retail-store-carts \
+            -n ${{ env.NAMESPACE }} --timeout=3m
+
+          echo "All service endpoints configured ✓"
       - name: Apply Ingress and NetworkPolicies
         run: |
           kubectl apply -f k8s/ingress.yaml
