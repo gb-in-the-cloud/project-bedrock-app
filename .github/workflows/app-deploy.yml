@@ -241,6 +241,15 @@ jobs:
             --timeout=5m
       - name: Configure service endpoints 
         run: |
+          # Wait for retail-store-ui configmap to exist
+          echo "Waiting for retail-store-ui configmap..."
+          for i in {1..20}; do
+          kubectl get configmap retail-store-ui \
+          -n ${{ env.NAMESPACE }} &>/dev/null && break
+          echo "Attempt $i/20 — waiting 10s..."
+          sleep 10
+          done
+
           # Fix UI configmap to use correct service names
           kubectl patch configmap retail-store-ui \
             -n ${{ env.NAMESPACE }} \
@@ -253,6 +262,7 @@ jobs:
                 "ENDPOINTS_ASSETS":   "http://retail-store-assets:80"
               }
             }'
+            
             #Fix catalog → RDS MySQL
           MYSQL_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "bedrock/catalog-mysql" \
@@ -266,6 +276,7 @@ jobs:
             --env="DB_USER=$(echo $MYSQL_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
             --env="DB_PASSWORD=$(echo $MYSQL_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
             --env="DB_NAME=catalog"
+
           # Fix orders → RDS PostgreSQL
           PG_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "bedrock/orders-postgres" \
@@ -279,7 +290,8 @@ jobs:
             --env="DB_USER=$(echo $PG_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])")" \
             --env="DB_PASSWORD=$(echo $PG_SECRET | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
             --env="DB_NAME=orders"
-            # Fix carts → DynamoDB
+
+          # Fix carts → DynamoDB
           kubectl set env deployment/retail-store-carts \
             -n ${{ env.NAMESPACE }} \
             --env="CARTS_DYNAMODB_TABLE_NAME=project-bedrock-carts" \
